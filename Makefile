@@ -8,7 +8,7 @@ BINARY := "tpm"
 
 all := $(CA_KEY) $(CA_CSR)$(SERVER_CERT) build
 
-build: $(SERVER_CERT)
+build:
 	go build -ldflags="-s -w" -o $(BINARY) main.go
 
 $(SERVER_CERT): generate_certs
