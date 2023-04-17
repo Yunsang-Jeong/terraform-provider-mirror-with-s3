@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"fmt"
+	"io"
 	"path"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -66,11 +67,31 @@ func (a *awsConfig) DownloadObjectToBuffer(bucketName string, objectKey string) 
 		writer,
 		&s3.GetObjectInput{
 			Bucket: aws.String(bucketName),
-			Key:    &objectKey,
+			Key:    aws.String(objectKey),
 		},
 	); err != nil {
 		return nil, errors.Wrap(err, fmt.Sprintf("fail to download object(%s) from aws s3 bucket(%s)", objectKey, bucketName))
 	}
 
 	return writer.Bytes(), nil
+}
+
+func (a *awsConfig) UploadObject(bucketName string, objectKey string, reader *io.ReadCloser) error {
+	defer (*reader).Close()
+
+	client := s3.NewFromConfig(a.config)
+
+	uploader := manager.NewUploader(client)
+
+	if _, err := uploader.Upload(context.TODO(),
+		&s3.PutObjectInput{
+			Bucket: aws.String(bucketName),
+			Key:    aws.String(objectKey),
+			Body:   *reader,
+		},
+	); err != nil {
+		return errors.Wrap(err, fmt.Sprintf("fail to updateload object(%s) from aws s3 bucket(%s)", objectKey, bucketName))
+	}
+
+	return nil
 }
