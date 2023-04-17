@@ -7,7 +7,7 @@ import (
 	"github.com/Yunsang-Jeong/terraform-provider-mirror-with-s3/internal/aws"
 )
 
-func listProvidersFromS3(bucket string) ([]provider, error) {
+func listProvidersFromS3(bucket string) ([]*provider, error) {
 	awsConfig, err := aws.NewAWSConfig("ap-northeast-2")
 	if err != nil {
 		return nil, err
@@ -18,7 +18,7 @@ func listProvidersFromS3(bucket string) ([]provider, error) {
 		return nil, err
 	}
 
-	providers := map[string]provider{}
+	providers := map[string]*provider{}
 	for _, key := range objectKeys {
 		pathSegments := strings.Split(key, "/")
 		if len(pathSegments) != 4 {
@@ -46,7 +46,7 @@ func listProvidersFromS3(bucket string) ([]provider, error) {
 			p.versions = append(p.versions, providerVersion)
 			providers[key] = p
 		} else {
-			providers[key] = provider{
+			providers[key] = &provider{
 				hostname:    hostname,
 				namespace:   namespace,
 				_type:       _type,
@@ -58,7 +58,7 @@ func listProvidersFromS3(bucket string) ([]provider, error) {
 		}
 	}
 
-	values := make([]provider, 0, len(providers))
+	values := make([]*provider, 0, len(providers))
 	for _, v := range providers {
 		values = append(values, v)
 	}
