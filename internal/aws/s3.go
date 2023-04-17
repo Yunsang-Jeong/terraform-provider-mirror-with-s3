@@ -61,7 +61,6 @@ func (a *awsConfig) DownloadObjectToBuffer(bucketName string, objectKey string) 
 	writer := manager.NewWriteAtBuffer(buf)
 
 	downloader := manager.NewDownloader(client)
-	downloader.Concurrency = 1
 
 	if _, err := downloader.Download(context.TODO(),
 		writer,
