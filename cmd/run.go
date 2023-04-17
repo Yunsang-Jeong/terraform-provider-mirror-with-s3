@@ -7,8 +7,9 @@ import (
 
 type RunCmd struct{}
 
-var runStringFlags = map[string]flag{
+var runCmdFlags = map[string]flag{
 	"Bukcet": {
+		_type:       "string",
 		shorten:     "b",
 		description: "[req] The name of AWS S3 bucket to search terraform provider",
 		requirement: true,
@@ -31,7 +32,7 @@ func (r *RunCmd) Init() *cobra.Command {
 		},
 	}
 
-	cobraFlagRegister(c, runStringFlags)
+	cobraFlagRegister(c, runCmdFlags)
 
 	return c
 }

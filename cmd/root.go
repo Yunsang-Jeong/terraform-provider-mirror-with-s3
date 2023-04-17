@@ -7,8 +7,9 @@ import (
 )
 
 type flag struct {
+	_type        string
 	shorten      string
-	defaultValue string
+	defaultValue interface{}
 	description  string
 	requirement  bool
 }
@@ -39,15 +40,30 @@ func Execute() {
 
 func cobraFlagRegister(c *cobra.Command, flags map[string]flag) {
 	for name, flag := range flags {
-		c.Flags().StringP(
-			name,
-			flag.shorten,
-			flag.defaultValue,
-			flag.description,
-		)
 
-		if flag.requirement {
-			c.MarkFlagRequired(name)
+		switch flag._type {
+		case "string":
+			c.Flags().StringP(
+				name,
+				flag.shorten,
+				flag.defaultValue.(string),
+				flag.description,
+			)
+			if flag.requirement {
+				c.MarkFlagRequired(name)
+			}
+		case "list":
+			c.Flags().StringSliceP(
+				name,
+				flag.shorten,
+				flag.defaultValue.([]string),
+				flag.description,
+			)
+			if flag.requirement {
+				c.MarkFlagRequired(name)
+			}
+		default:
+			panic(fmt.Sprintf("unsupported flag type: %s", flag._type))
 		}
 	}
 }
