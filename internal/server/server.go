@@ -1,116 +1,115 @@
 package server
 
 import (
-	"errors"
 	"fmt"
-	"io"
-	"path"
+	"net/http"
 	"path/filepath"
 	"strings"
 
-	"github.com/gin-gonic/gin"
+	"github.com/Yunsang-Jeong/terraform-provider-mirror-with-s3/internal/aws"
 )
 
-type provider struct {
-	hostname    string
-	namespace   string
-	_type       string
-	name        string
-	os          string
-	archtecture string
-	versions    []string
-}
 
 type providerMirrorServer struct {
-	bucket string
-	cert   string
-	key    string
-	router *gin.Engine
+	bucketName string
+	providerSpecs []*providerSpec
 }
 
-func NewProviderMirrorServer(bucket string, cert string, key string, release bool, silent bool) providerMirrorServer {
-	if release {
-		gin.SetMode(gin.ReleaseMode)
-	}
+type providerSpec struct {
+	bucketName string
+	address string
+	versions []*providerVersionSpec
+}
 
-	if silent {
-		gin.DefaultWriter = io.Discard
-	}
+type providerVersionSpec struct {
+	name string
+	version string
+	os string
+	arch string
+}
 
+func NewProviderMirrorServer(bucketName string) providerMirrorServer {
 	return providerMirrorServer{
-		bucket: bucket,
-		cert:   cert,
-		key:    key,
-		router: gin.Default(),
+		bucketName: bucketName,
+		providerSpecs: nil,
 	}
 }
 
 func (s *providerMirrorServer) Start() error {
-	providers, err := listProvidersFromS3(s.bucket)
+	if err := s.getAvailableProvidersFromS3Bucket() ;err != nil {
+		return err
+	}
+
+	mux := http.NewServeMux()
+	
+	s.setHandler(mux)
+
+	server := http.Server{
+		Addr: fmt.Sprintf(":%d", 3000),
+		Handler: mux,
+	}
+
+	generateCerticiate("key.pem", "cert.pem")
+
+	return server.ListenAndServeTLS("cert.pem", "key.pem")
+}
+
+func (s *providerMirrorServer) getAvailableProvidersFromS3Bucket() error {
+	awsConfig, err := aws.NewAWSConfig("ap-northeast-2")
 	if err != nil {
 		return err
 	}
 
-	if s.router == nil {
-		return errors.New("router is not initialized")
+	objectKeys, err := awsConfig.ListBucketObjectKeys(s.bucketName)
+	if err != nil {
+		return err
 	}
 
-	for _, p := range providers {
-		baseUrl := fmt.Sprintf("%s/%s/%s", p.hostname, p.namespace, p._type)
-		g := s.router.Group(baseUrl)
+	providers := map[string][]*providerVersionSpec{}
 
-		g.GET("/index.json", p.listAvailableVersions)
+	for _, key := range objectKeys {
+		pathSegments := strings.Split(key, "/")
+		if len(pathSegments) != 4 {
+			continue
+		}
 
-		for _, v := range p.versions {
-			g.GET(fmt.Sprintf("/%s.json", v), p.listAvailableInstallationPackages)
+		hostnamePortion := pathSegments[0]
+		namespacePortion := pathSegments[1]
+		typePortion := pathSegments[2]
+		providerAddress := strings.Join([]string{hostnamePortion, namespacePortion, typePortion}, "/")
 
-			providerFile := fmt.Sprintf("%s_%s_%s_%s.zip", p.name, v, p.os, p.archtecture)
-			g.GET(providerFile, func(c *gin.Context) {
-				providerFile := path.Base(c.FullPath())
+		providerFileName := pathSegments[3]
+		fileNameSegments := strings.SplitN(strings.TrimSuffix(providerFileName, filepath.Ext(providerFileName)), "_", 4)
+		if len(fileNameSegments) != 4 {
+			continue
+		}
+		providerName := fileNameSegments[0]
+		providerVersion := fileNameSegments[1]
+		providerOS := fileNameSegments[2]
+		providerArch := fileNameSegments[3]
 
-				buffer, err := downloadProviderFromS3(s.bucket, fmt.Sprintf("%s/%s", baseUrl, providerFile))
-				if err != nil {
-					c.AbortWithError(500, err)
-				}
+		spec := &providerVersionSpec{
+			name: providerName,
+			version: providerVersion,
+			os: providerOS,
+			arch: providerArch,
+		}
 
-				c.Data(200, "application/octet-stream", buffer)
-			})
+		if p, exists := providers[providerAddress]; exists {
+			providers[providerAddress] = append(p, spec)
+		} else {
+			providers[providerAddress] = []*providerVersionSpec{spec}
 		}
 	}
 
-	return s.router.RunTLS(":443", s.cert, s.key)
-}
-
-// list available versions
-// https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol#list-available-versions
-func (p *provider) listAvailableVersions(c *gin.Context) {
-	c.Writer.Header().Set("Content-Type", "application/json")
-
-	versions := make(map[string]any)
-	for _, v := range p.versions {
-		versions[v] = map[string]any{}
+	s.providerSpecs = make([]*providerSpec, 0, len(providers))
+	for address, specs := range providers {
+		s.providerSpecs = append(s.providerSpecs, &providerSpec{
+			bucketName: s.bucketName,
+			address: address,
+			versions: specs,
+		})
 	}
 
-	c.JSON(200, gin.H{
-		"versions": versions,
-	})
-}
-
-// list available installation packages
-// https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol#list-available-installation-packages
-func (p *provider) listAvailableInstallationPackages(c *gin.Context) {
-	c.Writer.Header().Set("Content-Type", "application/json")
-
-	last_path_segment := path.Base(c.Request.URL.Path)
-	version := strings.TrimSuffix(last_path_segment, filepath.Ext(last_path_segment))
-	os_arch := fmt.Sprintf("%s_%s", p.os, p.archtecture)
-
-	c.JSON(200, gin.H{
-		"archives": gin.H{
-			os_arch: gin.H{
-				"url":   fmt.Sprintf("terraform-provider-%s_%s_%s.zip", p._type, version, os_arch),
-				"hahes": []string{}, // optional
-			},
-		},
-	})
+	return nil
 }
