@@ -1,8 +1,10 @@
 package uploader
 
 import (
+	"encoding/json"
 	"fmt"
-	"sync"
+	"io"
+	"net/http"
 
 	"github.com/Yunsang-Jeong/terraform-provider-mirror-with-s3/internal/aws"
 	errors "github.com/pkg/errors"
@@ -10,55 +12,119 @@ import (
 
 type uploader struct {
 	bucket      string
-	providers   []string
-	os          string
-	archtecture string
+	providerHostname string
+	providerNamespace string
+	providerType string
+	providerOS string
+	providerArch string
+	providerVersion string
 }
 
-func NewUploader(bucket string, providers []string, os string, archtecture string) uploader {
+
+type providerMeta struct {
+	Id          string      `json:"id"`
+	Namespace   string      `json:"namespace"`
+	Name        string      `json:"name"`
+	Version     string      `json:"version"`
+	Description string      `json:"description"`
+	Others      interface{} `json:"-"`
+}
+
+func NewUploader(bucket string, providerHostname string, providerNamespace string, providerType string, providerOS string, providerArch string, providerVersion string) uploader {
 	return uploader{
 		bucket:      bucket,
-		providers:   providers,
-		os:          os,
-		archtecture: archtecture,
+		providerHostname: providerHostname,
+		providerNamespace: providerNamespace,
+		providerType: providerType,
+		providerOS: providerOS,
+		providerArch: providerArch,
+		providerVersion: providerVersion,
 	}
 }
 
-func (u *uploader) Start() error {
-	var wg sync.WaitGroup
 
-	wg.Add(len(u.providers))
-	for _, p := range u.providers {
-		p := p
-		go func() {
-			defer wg.Done()
-
-			meta, err := getProviderMeta(p, u.os, u.archtecture)
-			if err != nil {
-				errors.Wrapf(err, "fail to upload provider: %s", p)
-				return
-			}
-
-			reader, err := getProviderFileReader(meta.Description, meta.Version, u.os, u.archtecture)
-			if err != nil {
-				errors.Wrapf(err, "fail to upload provider: %s", p)
-				return
-			}
-
-			awsConfig, err := aws.NewAWSConfig("ap-northeast-2")
-			if err != nil {
-				errors.Wrapf(err, "fail to upload provider: %s", p)
-				return
-			}
-
-			key := fmt.Sprintf("registry.terraform.io/%s/%s/%s_%s_%s_%s.zip", meta.Namespace, meta.Name, meta.Description, meta.Version, u.os, u.archtecture)
-			if err := awsConfig.UploadObject(u.bucket, key, reader); err != nil {
-				errors.Wrapf(err, "fail to upload provider: %s", p)
-				return
-			}
-		}()
+func fetchJSON(url string) (map[string]interface{}, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
 	}
-	wg.Wait()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.New(fmt.Sprintf("Error fetching JSON from %s: status code is %d", url, resp.StatusCode))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+			fmt.Printf("Error reading response body: %v\n", err)
+			return nil, err
+	}
+
+	var data map[string]interface{}
+
+	if err := json.Unmarshal(body, &data); err != nil {
+    fmt.Printf("Error unmarshalling JSON: %v\n", err)
+    return nil, err
+	}
+
+	return data, nil
+}
+
+func downloadAndUploadProvider(providerDownloadURL string, providerFileName string, bucketName string, objectKey string) (error) {
+	resp, err := http.Get(providerDownloadURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return errors.New(fmt.Sprintf("fail to get provider meta: status code is %d", resp.StatusCode))
+	}
+
+	awsConfig, err := aws.NewAWSConfig("ap-northeast-2")
+	if err != nil {
+		return err
+	}
+	
+	if err := awsConfig.UploadObject(bucketName, objectKey, &resp.Body); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+
+func (u *uploader) Start() error {
+	wellKnownURL := fmt.Sprintf("https://%s/.well-known/terraform.json", u.providerHostname)
+	wellKnownJSON, err := fetchJSON(wellKnownURL)
+	if err != nil {
+		return err
+	}
+
+	providerInfoURL := fmt.Sprintf("https://%s%s%s/%s", u.providerHostname, wellKnownJSON["providers.v1"].(string), u.providerNamespace, u.providerType)
+	
+	if u.providerVersion == "" {
+		providerInfoJSON, err := fetchJSON(providerInfoURL)
+		if err != nil {
+			return err
+		}
+
+		u.providerVersion = providerInfoJSON["version"].(string)
+	}
+
+	providerVersionInfoURL := fmt.Sprintf("%s/%s/download/%s/%s", providerInfoURL, u.providerVersion, u.providerArch, u.providerOS)
+	providerVersionInfoJSON, err := fetchJSON(providerVersionInfoURL)
+	if err != nil {
+		return err
+	}
+	
+	providerDownloadURL := providerVersionInfoJSON["download_url"].(string)
+	providerFileName := providerVersionInfoJSON["filename"].(string)
+	objectKey := fmt.Sprintf("%s/%s/%s/%s", u.providerHostname, u.providerNamespace, u.providerType, providerFileName)
+	
+	if downloadAndUploadProvider(providerDownloadURL, providerFileName, u.bucket, objectKey) != nil {
+		return err
+	}
 
 	return nil
 }

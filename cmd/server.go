@@ -5,10 +5,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type RunCmd struct{}
+type ServerCmd struct{}
 
-var runCmdFlags = map[string]flag{
-	"Bukcet": {
+var serverCmdFlags = map[string]flag{
+	"BukcetName": {
 		_type:       "string",
 		shorten:     "b",
 		description: "[req] The name of AWS S3 bucket to search terraform provider",
@@ -16,14 +16,14 @@ var runCmdFlags = map[string]flag{
 	},
 }
 
-func (r *RunCmd) Init() *cobra.Command {
+func (r *ServerCmd) Init() *cobra.Command {
 	c := &cobra.Command{
-		Use:   "run",
-		Short: "Run terraform provider mirror",
+		Use:   "server",
+		Short: "Run the server serving the terraform providers",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			bucket, _ := cmd.Flags().GetString("Bukcet")
+			bucketName, _ := cmd.Flags().GetString("BukcetName")
 
-			s := server.NewProviderMirrorServer(bucket, "server.crt", "ca.key", true, true)
+			s := server.NewProviderMirrorServer(bucketName)
 			if err := s.Start(); err != nil {
 				return err
 			}
@@ -32,7 +32,7 @@ func (r *RunCmd) Init() *cobra.Command {
 		},
 	}
 
-	cobraFlagRegister(c, runCmdFlags)
+	cobraFlagRegister(c, serverCmdFlags)
 
 	return c
 }
