@@ -1,100 +1,81 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
+	"log"
 	"net/http"
-	"path"
 	"path/filepath"
 	"strings"
-
-	"github.com/Yunsang-Jeong/terraform-provider-mirror-with-s3/internal/aws"
 )
 
-type WrapResponseWriter struct {
-	w io.Writer
-}
-
-func (fw WrapResponseWriter) WriteAt(p []byte, offset int64) (n int, err error) {
-	return fw.w.Write(p)
+type availableProvider struct {
+	indexPath  string
+	pHostname  string
+	pNamespace string
+	pType      string
 }
 
 func (s *providerMirrorServer) setHandler(mux *http.ServeMux) error {
-	for _, spec := range s.providerSpecs {
-		index_url := fmt.Sprintf("/%s/index.json", spec.address)
-		mux.HandleFunc(index_url, spec.listAvailableVersions)
-		
-		for _, v := range spec.versions{
-			version_url := fmt.Sprintf("/%s/%s.json", spec.address, v.version)
-			mux.HandleFunc(version_url, spec.listAvailableInstallationPackages)
-		
-			provider_url := fmt.Sprintf("/%s_%s_%s_%s.zip", v.name, v.version, v.os, v.arch)
-			mux.HandleFunc(provider_url, spec.downloadPackage)
-			fmt.Println(provider_url)
-		}
+	awsS3Client, err := newAWSS3Client("ap-northeast-2")
+	if err != nil {
+		return err
+	}
+	s.awsS3Client = awsS3Client
+
+	availableProviders, err := s.getAvailableProviders()
+	if err != nil {
+		return err
+	}
+
+	for _, provider := range availableProviders {
+		mux.HandleFunc(
+			fmt.Sprintf("/%s/", provider.indexPath),
+			s.proxyAWSS3Object,
+		)
 	}
 
 	return nil
 }
 
-// list available versions
-// https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol#list-available-versions
-func (p *providerSpec) listAvailableVersions(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	payload := make(map[string]any)
-
-	versions := make(map[string]any)
-	for _, v := range p.versions {
-		versions[v.version] = map[string]any{}
-	}
-
-	payload["versions"] = versions
-
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(payload)
-}
-
-
-// list available installation packages
-// https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol#list-available-installation-packages
-func (p *providerSpec) listAvailableInstallationPackages(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	payload := make(map[string]any)
-
-	archives := make(map[string]any)
-	last_path_segment := path.Base(r.URL.Path)
-	version := strings.TrimSuffix(last_path_segment, filepath.Ext(last_path_segment))
-
-	for _, v := range p.versions {
-		if v.version == version {
-			os_arch := strings.Join([]string{v.os, v.arch}, "_")
-			archives[os_arch] =  map[string]any{
-					"url":   fmt.Sprintf("%s_%s_%s_%s.zip", v.name, v.version, v.os, v.arch),
-					"hahes": []string{}, // optional
-			}
-			break
-		}
-	}
-
-	payload["archives"] = archives
-
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (p *providerSpec) downloadPackage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/octet-stream")
-
-	awsConfig, err := aws.NewAWSConfig("ap-northeast-2")
+func (s *providerMirrorServer) getAvailableProviders() ([]*availableProvider, error) {
+	objectKeys, err := s.awsS3Client.awsS3ListObjects(s.bucketName)
 	if err != nil {
-		return
+		return nil, err
 	}
 
-	awsConfig.DownloadObjectToBuffer(WrapResponseWriter{w: w}, p.bucketName, p.address + r.URL.Path)
+	availableProviders := make([]*availableProvider, 0)
+
+	for _, objectKey := range objectKeys {
+		if filepath.Base(objectKey) != "index.json" {
+			continue
+		}
+
+		indexPath := filepath.Dir(objectKey)
+		pathSegments := strings.Split(objectKey, "/")
+
+		if len(pathSegments) != 4 {
+			log.Printf("[skip] Weired Object path: %s", objectKey)
+			continue
+		}
+
+		availableProviders = append(availableProviders, &availableProvider{
+			indexPath:  indexPath,
+			pHostname:  pathSegments[0],
+			pNamespace: pathSegments[1],
+			pType:      pathSegments[2],
+		})
+
+		log.Printf("sucess to regist available-provider: %s", indexPath)
+	}
+
+	return availableProviders, nil
 }
 
+func (s *providerMirrorServer) proxyAWSS3Object(w http.ResponseWriter, r *http.Request) {
+	objectKey := strings.TrimPrefix(r.URL.Path, "/")
 
-
+	if err := s.awsS3Client.awsS3ProxyObjectWithChunk(s.bucketName, objectKey, w); err != nil {
+		log.Printf("Error %v\n", err)
+		http.Error(w, "Error during download", http.StatusInternalServerError)
+	}
+}
