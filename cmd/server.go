@@ -14,6 +14,18 @@ var serverCmdFlags = map[string]flag{
 		description: "[req] The name of AWS S3 bucket to search terraform provider",
 		requirement: true,
 	},
+	"CertFile": {
+		_type:       "string",
+		shorten:     "c",
+		description: "[req] The https certificate file",
+		requirement: true,
+	},
+	"KeyFile": {
+		_type:       "string",
+		shorten:     "k",
+		description: "[req] The https private-key file",
+		requirement: true,
+	},
 }
 
 func (r *ServerCmd) Init() *cobra.Command {
@@ -21,9 +33,13 @@ func (r *ServerCmd) Init() *cobra.Command {
 		Use:   "server",
 		Short: "Run the server serving the terraform providers",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			bucketName, _ := cmd.Flags().GetString("BukcetName")
+			flags := cmd.Flags()
 
-			s := server.NewProviderMirrorServer(bucketName)
+			bucketName, _ := flags.GetString("BukcetName")
+			certFile, _ := flags.GetString("CertFile")
+			keyFile, _ := flags.GetString("KeyFile")
+
+			s := server.NewProviderMirrorServer(bucketName, certFile, keyFile)
 			if err := s.Start(); err != nil {
 				return err
 			}
